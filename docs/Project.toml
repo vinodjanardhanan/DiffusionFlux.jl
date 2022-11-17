@@ -1,3 +1,4 @@
 [deps]
 DiffusionFlux = "0088ed5a-e206-4379-b0fa-25d85632c804"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+IdealGas = "7aa10a8e-8b87-4952-8d6b-aae44b8b139e"

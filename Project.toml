@@ -10,6 +10,9 @@ TransportProperties = "5257e33d-5a01-4fd1-9680-e504fee35d5b"
 
 [compat]
 julia = "1.8.2"
+IdealGas = "0.1.2"
+RxnHelperUtils = "0.1.2"
+TransportProperties = "0.1.1"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

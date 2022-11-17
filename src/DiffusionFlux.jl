@@ -2,7 +2,7 @@ module DiffusionFlux
 
 using IdealGas, TransportProperties, RxnHelperUtils
 
-export flux_dgm!, D_Kn, KozeneyCarman, dgm_objects!, flux_ficks!, interface_flux!
+export  D_Kn, KozeneyCarman, effective_coefficients!, flux_ficks!, flux_interface!, flux_dgm!, flux_porous_media_fick!
 
 """
 A structure to define the porous medis properties 
@@ -20,12 +20,20 @@ end
 export Properties
 
 
-
-mutable struct DGMObjects
+"""
+Non allocating array for calculation of fluxes 
+-   D_kn_e : Array for Knudsen diffusion coeffcients
+-   D_ij_e : Array for binary diffusion coeffcients
+-   D_kl_DGM : Array space for use in DGM 
+-   Dkm : Array for storing diffusion coeffcients of k in the rest of the mixture
+"""
+mutable struct WorkSpace
     D_kn_e::Array{Float64}
     D_ij_e::Matrix{Float64}    
+    Dkl_DGM::Matrix{Float64}
+    Dkm::Array{Float64}
 end
-export DGMObjects
+export WorkSpace
 
 
 """
@@ -69,10 +77,8 @@ Function to evaluate Matrix of Diffusion coeffcients for Dusty Gas Model
 =#
 function D_kl_DGM!(Dkl_DGM, D_kn_e::Array{Float64,1}, D_ij_e::Matrix{Float64}, mole_fracs::Array{Float64})
     n = length(mole_fracs)
-    H = zeros(n,n)
-    H_matrix!(H, D_kn_e, D_ij_e, mole_fracs)    
-    # display(inv(H))
-    Dkl_DGM .= inv(H)
+    H_matrix!(Dkl_DGM, D_kn_e, D_ij_e, mole_fracs)        
+    Dkl_DGM .= inv(Dkl_DGM)
 end
 
 
@@ -80,15 +86,15 @@ end
 Function to calculate binary diffusion coeffcients and Knudsen diffusion coeffcients,
 which are required for the evaluation of DGM fluxes
 # Usage  
-dgm_objects!(dgm_obj::DGMObjects, pm::Properties, sp_trd, p::Float64, T::Float64 ,molwts::Array{Float64})
--   dgm_obj : A struct of the type DGMObjects which stores the diffusion coeffcients matrix
+effective_coefficients!(dgm_obj::WorkSpace, pm::Properties, sp_trd, p::Float64, T::Float64 ,molwts::Array{Float64})
+-   dgm_obj : A struct of the type WorkSpace which stores the diffusion coeffcients matrix
 -   pm : Porous media properties (struct of the type Properties)
 -   sp_trd : Array of Species transport data, which is obtained by calling create_transport_data of TransportProperties
 -   p : pressure in (Pa)
 -   T : Temperature (K)
 -   molwts : molecular weights vector 
 """
-function dgm_objects!(dgm_obj::DGMObjects, pm::Properties, sp_trd, p::Float64, T::Float64, molwts::Array{Float64})
+function effective_coefficients!(dgm_obj::WorkSpace, pm::Properties, sp_trd, p::Float64, T::Float64, molwts::Array{Float64})
     # calculate the effective binary diffusion coeffcients    
     dgm_obj.D_ij_e = (pm.ϵ/pm.τ) * D_ij(sp_trd, T, p, molwts)
     
@@ -102,14 +108,17 @@ Function to calculate the mass fluxes (kg/m^2-s) at the interface between two ce
 The fluxes at the boundary cells are not evaluated in this function. If There
 are n cells, there will be n-1 internal cell faces 
 # Usage 
-flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, dgm_obj::DGMObjects , molwts::Array{T}, Temp::T, δ::T)
+flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, dgm_obj::WorkSpace , molwts::Array{T}, Temp::T, δ::T)
 -   jks : vector{vector} for storing the fluxes jks[n] stands for the flux at the interface between n and (n+1)th cell
 -   C : vector{vector} concentrations in all cells 
 -   pm : Porous media properties (struct of the type Properties)
--   dgm_obj : A struct of the type DGMObjects which stores the diffusion coeffcients matrix
+-   dgm_obj : A struct of the type WorkSpace which stores the diffusion coeffcients matrix
+-   sp_tr_data : Array of Species transport data, which is obtained by calling create_transport_data of TransportProperties
 -   molwts : vector of molecular weights
+-   Temp : Temperature (K)
+-   δ : distance between cell centers 
 """
-function flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, dgm_obj::DGMObjects, sp_tr_data, molwts::Array{T}, Temp::T, δ::T) where T
+function flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, dgm_obj::WorkSpace, sp_tr_data, molwts::Array{T}, Temp::T, δ::T) where T
     # Permeability
     Bg = KozeneyCarman(pm)
     # number of cells 
@@ -117,8 +126,6 @@ function flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Propert
     # pressure in each cell 
     p_vec = map(Cs->sum(Cs)*IdealGas.R*Temp, C)
     
-    # n = length(C)
-    Dkl_DGM = similar(dgm_obj.D_ij_e)
     #=
     Only an approximate value of viscosity is enough for these calculations 
     =#
@@ -130,11 +137,11 @@ function flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Propert
         ∇p = (p_vec[i+1]-p_vec[i])/δ # pressure gradient in the cell 
         C_avg = 0.5*(C[i+1]+C[i]) # Average concentration at the cell faces 
         mole_fracs = C_avg/sum(C_avg) # average mole fractions at the cell faces 
-        D_kl_DGM!(Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
+        D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
         sp_flux = zeros(length(mole_fracs))
         for k in eachindex(mole_fracs)
-            jk_1 = sum(Dkl_DGM[k,:] .* ∇C)
-            jk_2 = sum((Dkl_DGM[k,:] .* C_avg) ./ dgm_obj.D_kn_e)*Bg*∇p/μ
+            jk_1 = sum(dgm_obj.Dkl_DGM[k,:] .* ∇C)
+            jk_2 = sum((dgm_obj.Dkl_DGM[k,:] .* C_avg) ./ dgm_obj.D_kn_e)*Bg*∇p/μ
             sp_flux[k] = jk_1 + jk_2
         end
         jks[i] = -sp_flux .* molwts
@@ -146,7 +153,7 @@ end
 Function to calcuate the mass flux (kg/m^2-s) at the inteface between flow channel and porous media.
 The pressure driven flux is assumed to be negligible at the inteface 
 # Usage
-interface_flux!(jks::Array{T,1},C_ch, C_pm, dgm_obj::DGMObjects, molwts::Array{T}, Temp::T, δ::T)
+interface_flux!(jks::Array{T,1},C_ch, C_pm, dgm_obj::WorkSpace, molwts::Array{T}, Temp::T, δ::T)
 -   jks : Storage for species flux (1D Array)
 -   C_ch : concentration in the flow channel
 -   C_pm : concentration in the porous media
@@ -155,15 +162,15 @@ interface_flux!(jks::Array{T,1},C_ch, C_pm, dgm_obj::DGMObjects, molwts::Array{T
 -   Temp : Temperature (K)
 -   δ   : distance between the cell centers 
 """
-function interface_flux!(jks::Array{T,1},C_ch, C_pm, dgm_obj::DGMObjects, molwts::Array{T}, δ::T) where T
+function flux_interface!(jks::Array{T,1},C_ch, C_pm, dgm_obj::WorkSpace, molwts::Array{T}, δ::T) where T
     ∇C = (C_ch - C_pm)/δ    
     C_avg = 0.5*(C_ch+C_pm)
     mole_fracs = C_avg/sum(C_avg) # average mole fractions at the cell faces 
     n = length(C_ch)
     Dkl_DGM = zeros(n,n)    
-    D_kl_DGM!(Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
+    D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
     for k in eachindex(C_ch)
-        jks[k] = -sum(Dkl_DGM[k,:] .* ∇C) * molwts[k]
+        jks[k] = -sum(dgm_obj.Dkl_DGM[k,:] .* ∇C) * molwts[k]
     end
 
 end
@@ -189,6 +196,55 @@ function flux_ficks!(jks::Array{T}, Dkm::Array{T} ,C1::Array{T}, C2::Array{T}, m
     molefrac_to_massfrac!(mass_fracs, mole_fracs, molwts)
     @. jks -= mass_fracs*j_corr
 end    
+
+
+
+"""
+Function to calculate the mass fluxes (kg/m^2-s) at the interface between two cells using modified Fickian model 
+The fluxes at the boundary cells are not evaluated in this function. If There
+are n cells, there will be n-1 internal cell faces 
+# Usage 
+flux_porous_media_fick!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, sp_tr_data, ws::WorkSpace , molwts::Array{T}, Temp::T, δ::T)
+-   jks : vector{vector} for storing the fluxes jks[n] stands for the flux at the interface between n and (n+1)th cell
+-   C : vector{vector} concentrations in all cells 
+-   pm : Porous media properties (struct of the type Properties)
+-   sp_tr_data : Array of Species transport data, which is obtained by calling create_transport_data of TransportProperties
+-   ws : A struct of the type WorkSpace which stores the diffusion coeffcients matrix
+-   molwts : vector of molecular weights
+-   Temp : Temperature (K)
+-   δ : distance between cell centers 
+"""
+function flux_porous_media_fick!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, sp_tr_data, ws::WorkSpace , molwts::Array{T}, Temp::T, δ::T) where T
+    ncells = length(C)    
+    p_vec = map(Cs->sum(Cs)*IdealGas.R*Temp, C)
+    # average pressure 
+    p = sum(p_vec)/ncells 
+    ncell = length(C)
+    # Permeability
+    Bg = KozeneyCarman(pm)
+    ws.D_kn_e = (pm.ϵ/pm.τ)*D_Kn(molwts, pm, Temp)
+    # this is not effective binary diffusion coeffcients
+    ws.D_ij_e = D_ij(sp_tr_data, Temp, p, molwts)
+    
+    # Average mole fractions in the whole porous media 
+    mole_fracs = sum(map(Cs->Cs/sum(Cs) , C))/ncells
+    # calculate the viscosity based on the average mole fractions 
+    μ = viscosity(sp_tr_data,Temp,molwts,mole_fracs)        
+    for i in 1:ncell-1
+        # mole fractions at the inteface between i'th and i+1'th cell 
+        mole_fracs = 0.5*( C[i]/sum(C[i]) + C[i+1]/sum(C[i+1]))
+        ∇C = (C[i+1]-C[i])/δ
+        D_km!(ws.Dkm, ws.D_ij_e, mole_fracs, molwts)
+        ws.Dkm *= pm.ϵ/pm.τ
+        De = (1.0 ./ ws.D_kn_e) + (1.0 ./ ws.Dkm)
+        De = 1.0 ./ De
+        jk1 = -De .* ∇C
+        jk2 = - Bg*(p_vec[i+1]-p_vec[i])/δ/μ
+        jks[i] = jk1 .+ jk2
+        @. jks[i] *= molwts
+    end
+    
+end
 
 
 end
