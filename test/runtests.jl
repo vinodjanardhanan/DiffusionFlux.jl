@@ -10,7 +10,7 @@ using Test
     end
     tr_file = joinpath(lib_dir, "transport.dat")
     therm_file = joinpath(lib_dir, "therm.dat")
-    species = ["CH4", "H2", "H2O", "CO2", "CO", "O2", "N2"]
+    species = ["H2", "H2O", "CO", "CH4", "CO2", "O2", "N2"]
     sp_trd = create_transport_data(species, tr_file)
     thermo_obj = create_thermo(species, therm_file)
     # channel concentration
