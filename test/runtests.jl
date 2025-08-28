@@ -72,6 +72,32 @@ using Test
 
     end
 
+        @testset "Testing DGM fluxes updated (porous media) " begin
+        pm = Properties(0.35, 3.5, 1e-6, 2.5e-6)
+        n = length(c1)
+        Dkn_e = Array{Float64,1}(undef, n)
+        D_ij_e = Matrix{Float64}(undef, n, n)        
+        Dkl_DGM = Matrix{Float64}(undef, n, n)
+        Dkm = Array{Float64,1}()
+        dgm_objs = WorkSpace(Dkn_e, D_ij_e, Dkl_DGM, Dkm)
+        δ=4.88e-5        
+        effective_coefficients!(dgm_objs, pm, sp_trd, 1e5, T, thermo_obj.molwt)
+        
+        ncells = 10
+        jks = Array{Array{Float64,1},1}(undef, ncells-1)
+        conc = Array{Array{Float64,1},1}(undef, ncells)
+        for i in 1:ncells
+            conc[i] = c1
+        end
+        
+        flux_dgm_Dij_update!(jks, conc, pm, dgm_objs, sp_trd,thermo_obj.molwt, T, δ)
+        total = reduce(.+, reduce(.+, jks))
+        @test total == 0
+
+    end
+
+
+
     @testset "Testing modified Ficks model" begin
         pm = Properties(0.35, 3.5, 1e-6, 2.5e-6)
         n = length(c1)
