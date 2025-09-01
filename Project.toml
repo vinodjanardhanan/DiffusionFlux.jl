@@ -11,7 +11,6 @@ TransportProperties = "5257e33d-5a01-4fd1-9680-e504fee35d5b"
 
 [compat]
 IdealGas = "0.2.3"
-LinearAlgebra = "1.11.0"
 RxnHelperUtils = "1.0.3"
 TransportProperties = "0.1.7"
 julia = "1.10.10"
