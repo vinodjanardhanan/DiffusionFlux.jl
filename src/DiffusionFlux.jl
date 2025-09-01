@@ -1,6 +1,6 @@
 module DiffusionFlux
 
-using IdealGas, TransportProperties, RxnHelperUtils
+using IdealGas, TransportProperties, RxnHelperUtils, LinearAlgebra
 
 export  D_Kn, KozeneyCarman, effective_coefficients!, flux_ficks!, flux_interface!, flux_dgm!, flux_porous_media_fick!
 export flux_dgm_Dij_update!
@@ -33,7 +33,10 @@ mutable struct WorkSpace
     D_ij_e::Matrix{Float64}    
     Dkl_DGM::Matrix{Float64}
     Dkm::Array{Float64}
+    I_matrix::Matrix{Float64} # Identity matrix
+    p_vec::Array{Float64} # pressure vector    
 end
+
 export WorkSpace
 
 
@@ -76,10 +79,11 @@ end
 #=
 Function to evaluate Matrix of Diffusion coeffcients for Dusty Gas Model 
 =#
-function D_kl_DGM!(Dkl_DGM, D_kn_e::Array{Float64,1}, D_ij_e::Matrix{Float64}, mole_fracs::Array{Float64})
+function D_kl_DGM!(Dkl_DGM, D_kn_e::Array{Float64,1}, D_ij_e::Matrix{Float64}, mole_fracs::Array{Float64}, I_mat::Matrix{Float64})
     # n = length(mole_fracs)
-    H_matrix!(Dkl_DGM, D_kn_e, D_ij_e, mole_fracs)        
-    Dkl_DGM .= inv(Dkl_DGM)
+    H_matrix!(Dkl_DGM, D_kn_e, D_ij_e, mole_fracs)   
+    F = lu!(Dkl_DGM)     
+    ldiv!(Dkl_DGM, F, I_mat)
 end
 
 
@@ -119,28 +123,33 @@ flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, dgm_
 -   Temp : Temperature (K)
 -   δ : distance between cell centers 
 """
-function flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, dgm_obj::WorkSpace, sp_tr_data, molwts::Array{T}, Temp::T, δ::T) where T
+function flux_dgm!(jks::Array{Array{T,1},1}, C::Matrix{T}, pm::Properties, dgm_obj::WorkSpace, sp_tr_data, molwts::Array{T}, Temp::T, δ::T) where T
     # Permeability
     Bg = KozeneyCarman(pm)
     # number of cells 
-    ncells = length(C)
+    ncells = size(C, 2)
     # pressure in each cell 
-    p_vec = map(Cs->sum(Cs)*IdealGas.R*Temp, C)
+    for i in 1:ncells
+        dgm_obj.p_vec[i] = sum(@view C[:, i]) * IdealGas.R * Temp
+    end
     
     #=
     Only an approximate value of viscosity is enough for these calculations 
     =#
-    mole_fracs = sum(map(Cs->Cs/sum(Cs) , C))/ncells
+    # mole_fracs = sum(map(Cs->Cs/sum(Cs) , C))/ncells # this is an approximate value averaged over all cells
+    mole_fracs = vec(sum(C, dims=2)) ./ sum(C) # approximate molefractions 
     μ = viscosity(sp_tr_data,Temp,molwts,mole_fracs)    
-
+    sp_flux = zeros(length(mole_fracs))
     for i in 1:ncells-1
-        ∇C = (C[i+1]-C[i])/δ  # vector of concentration gradients 
-        ∇p = (p_vec[i+1]-p_vec[i])/δ # pressure gradient in the cell 
-        C_avg = 0.5*(C[i+1]+C[i]) # Average concentration at the cell faces 
+        C_1  = @view C[:, i]
+        C_2  = @view C[:, i+1]
+        ∇C = (C_2- C_1 )/δ  # vector of concentration gradients 
+        ∇p = (dgm_obj.p_vec[i+1]-dgm_obj.p_vec[i])/δ # pressure gradient in the cell 
+        C_avg = 0.5*(C_1 + C_2 ) # Average concentration at the cell faces 
         mole_fracs = C_avg/sum(C_avg) # average mole fractions at the cell faces 
-        D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
-        sp_flux = zeros(length(mole_fracs))
-        for k in eachindex(mole_fracs)
+        D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs, dgm_obj.I_matrix)
+        
+        @inbounds @simd for k in eachindex(mole_fracs)
             jk_1 = sum(dgm_obj.Dkl_DGM[k,:] .* ∇C)
             jk_2 = sum((dgm_obj.Dkl_DGM[k,:] .* C_avg) ./ dgm_obj.D_kn_e)*Bg*∇p/μ
             sp_flux[k] = jk_1 + jk_2
@@ -167,37 +176,37 @@ flux_dgm_Dij_update!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Prope
 -   Temp : Temperature (K)
 -   δ : distance between cell centers 
 """
-function flux_dgm_Dij_update!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, dgm_obj::WorkSpace, sp_tr_data, molwts::Array{T}, Temp::T, δ::T) where T
-    # Permeability
-    Bg = KozeneyCarman(pm)
-    # number of cells 
-    ncells = length(C)
-    # pressure in each cell 
-    p_vec = map(Cs->sum(Cs)*IdealGas.R*Temp, C)
+# function flux_dgm_Dij_update!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Properties, dgm_obj::WorkSpace, sp_tr_data, molwts::Array{T}, Temp::T, δ::T) where T
+#     # Permeability
+#     Bg = KozeneyCarman(pm)
+#     # number of cells 
+#     ncells = length(C)
+#     # pressure in each cell 
+#     p_vec = map(Cs->sum(Cs)*IdealGas.R*Temp, C)
     
-    #=
-    Only an approximate value of viscosity is enough for these calculations 
-    =#
-    mole_fracs = sum(map(Cs->Cs/sum(Cs) , C))/ncells
-    μ = viscosity(sp_tr_data,Temp,molwts,mole_fracs)    
+#     #=
+#     Only an approximate value of viscosity is enough for these calculations 
+#     =#
+#     mole_fracs = sum(map(Cs->Cs/sum(Cs) , C))/ncells
+#     μ = viscosity(sp_tr_data,Temp,molwts,mole_fracs)    
 
-    for i in 1:ncells-1
-        ∇C = (C[i+1]-C[i])/δ  # vector of concentration gradients 
-        dgm_obj.D_ij_e = (pm.ϵ/pm.τ) * D_ij(sp_tr_data, Temp, p_vec[i], molwts)        
-        ∇p = (p_vec[i+1]-p_vec[i])/δ # pressure gradient in the cell 
-        C_avg = 0.5*(C[i+1]+C[i]) # Average concentration at the cell faces 
-        mole_fracs = C_avg/sum(C_avg) # average mole fractions at the cell faces 
-        D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
-        sp_flux = zeros(length(mole_fracs))
-        for k in eachindex(mole_fracs)
-            jk_1 = sum(dgm_obj.Dkl_DGM[k,:] .* ∇C)
-            jk_2 = sum((dgm_obj.Dkl_DGM[k,:] .* C_avg) ./ dgm_obj.D_kn_e)*Bg*∇p/μ
-            sp_flux[k] = jk_1 + jk_2
-        end
-        jks[i] = -sp_flux .* molwts
-    end
+#     for i in 1:ncells-1
+#         ∇C = (C[i+1]-C[i])/δ  # vector of concentration gradients 
+#         dgm_obj.D_ij_e = (pm.ϵ/pm.τ) * D_ij(sp_tr_data, Temp, p_vec[i], molwts)        
+#         ∇p = (p_vec[i+1]-p_vec[i])/δ # pressure gradient in the cell 
+#         C_avg = 0.5*(C[i+1]+C[i]) # Average concentration at the cell faces 
+#         mole_fracs = C_avg/sum(C_avg) # average mole fractions at the cell faces 
+#         D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
+#         sp_flux = zeros(length(mole_fracs))
+#         for k in eachindex(mole_fracs)
+#             jk_1 = sum(dgm_obj.Dkl_DGM[k,:] .* ∇C)
+#             jk_2 = sum((dgm_obj.Dkl_DGM[k,:] .* C_avg) ./ dgm_obj.D_kn_e)*Bg*∇p/μ
+#             sp_flux[k] = jk_1 + jk_2
+#         end
+#         jks[i] = -sp_flux .* molwts
+#     end
                 
-end
+# end
 
 """
 Function to calcuate the mass flux (kg/m^2-s) at the inteface between flow channel and porous media.
@@ -218,7 +227,7 @@ function flux_interface!(jks::Array{T,1},C_ch, C_pm, dgm_obj::WorkSpace, molwts:
     mole_fracs = C_avg/sum(C_avg) # average mole fractions at the cell faces 
     # n = length(C_ch)
     # Dkl_DGM = zeros(n,n)    
-    D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
+    D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs, dgm_obj.I_matrix)
     for k in eachindex(C_ch)
         jks[k] = -sum(dgm_obj.Dkl_DGM[k,:] .* ∇C) * molwts[k]
     end
