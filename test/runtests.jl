@@ -1,4 +1,4 @@
-using DiffusionFlux, IdealGas, TransportProperties, LinearAlgebra
+using DiffusionFlux, IdealGas, TransportProperties
 using Test
 
 @testset "DiffusionFlux.jl" begin
@@ -38,10 +38,8 @@ using Test
         Dkn_e = Array{Float64,1}(undef, n)
         D_ij_e = Matrix{Float64}(undef, n, n)
         Dkl_DGM = Matrix{Float64}(undef, n, n)
-        I_mat = Matrix{Float64}(I, n, n)
-        p_vec = Array{Float64}(undef, n) # pressure vector
         Dkm = Array{Float64,1}()
-        dgm_objs = WorkSpace(Dkn_e, D_ij_e, Dkl_DGM, Dkm, I_mat, p_vec)
+        dgm_objs = WorkSpace(Dkn_e, D_ij_e, Dkl_DGM, Dkm)
         δ=4.88e-5
         jks = similar(c1)
         effective_coefficients!(dgm_objs, pm, sp_trd, 1e5, T, thermo_obj.molwt)
@@ -57,19 +55,15 @@ using Test
         D_ij_e = Matrix{Float64}(undef, n, n)        
         Dkl_DGM = Matrix{Float64}(undef, n, n)
         Dkm = Array{Float64,1}()
-        I_mat = Matrix{Float64}(I, n, n)
-        ncells = 10
-        p_vec = Array{Float64}(undef, ncells) # pressure vector
-        dgm_objs = WorkSpace(Dkn_e, D_ij_e, Dkl_DGM, Dkm, I_mat, p_vec)
+        dgm_objs = WorkSpace(Dkn_e, D_ij_e, Dkl_DGM, Dkm)
         δ=4.88e-5        
         effective_coefficients!(dgm_objs, pm, sp_trd, 1e5, T, thermo_obj.molwt)
         
-        
+        ncells = 10
         jks = Array{Array{Float64,1},1}(undef, ncells-1)
-        # conc = Array{Array{Float64,1},1}(undef, ncells)
-        conc = Matrix{Float64}(undef, n, ncells)
+        conc = Array{Array{Float64,1},1}(undef, ncells)
         for i in 1:ncells
-            conc[:, i] = c1
+            conc[i] = c1
         end
         
         flux_dgm!(jks, conc, pm, dgm_objs, sp_trd,thermo_obj.molwt, T, δ)
@@ -79,7 +73,6 @@ using Test
     end
 
 
-
     @testset "Testing modified Ficks model" begin
         pm = Properties(0.35, 3.5, 1e-6, 2.5e-6)
         n = length(c1)
@@ -87,11 +80,8 @@ using Test
         D_ij = Matrix{Float64}(undef, n, n)        
         Dkl_DGM = Matrix{Float64}(undef,1,1)
         Dkm = Array{Float64,1}(undef, n)
-        I_mat = Matrix{Float64}(I, n, n)
+        diff_coeffs = WorkSpace(Dkn_e, D_ij, Dkl_DGM, Dkm)
         ncells = 10
-        p_vec = Array{Float64}(undef, ncells) # pressure vector
-        diff_coeffs = WorkSpace(Dkn_e, D_ij, Dkl_DGM, Dkm, I_mat, p_vec)
-        
         conc = Array{Array{Float64,1},1}(undef, ncells)        
         for i in 1:ncells
             conc[i] = c1
