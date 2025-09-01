@@ -132,14 +132,14 @@ function flux_dgm!(jks::Array{Array{T,1},1}, C::Array{Array{T,1},1}, pm::Propert
     =#
     mole_fracs = sum(map(Cs->Cs/sum(Cs) , C))/ncells
     μ = viscosity(sp_tr_data,Temp,molwts,mole_fracs)    
-
+    sp_flux = zeros(length(mole_fracs))
     for i in 1:ncells-1
         ∇C = (C[i+1]-C[i])/δ  # vector of concentration gradients 
         ∇p = (p_vec[i+1]-p_vec[i])/δ # pressure gradient in the cell 
         C_avg = 0.5*(C[i+1]+C[i]) # Average concentration at the cell faces 
         mole_fracs = C_avg/sum(C_avg) # average mole fractions at the cell faces 
         D_kl_DGM!(dgm_obj.Dkl_DGM, dgm_obj.D_kn_e, dgm_obj.D_ij_e, mole_fracs)
-        sp_flux = zeros(length(mole_fracs))
+        
         for k in eachindex(mole_fracs)
             jk_1 = sum(dgm_obj.Dkl_DGM[k,:] .* ∇C)
             jk_2 = sum((dgm_obj.Dkl_DGM[k,:] .* C_avg) ./ dgm_obj.D_kn_e)*Bg*∇p/μ
